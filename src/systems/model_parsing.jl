@@ -64,42 +64,42 @@ function parse_variable_def!(dict, mod, arg, varclass, kwargs, def = nothing)
             push!(kwargs, Expr(:kw, a, def))
             var = generate_var!(dict, a, varclass)
             dict[:kwargs][getname(var)] = def
-            (var, nothing)
+            (var, a, nothing)
         end
         Expr(:call, a, b) => begin
-            push!(kwargs, Expr(:kw, a, def))
+            push!(kwargs, Expr(:kw, a, nothing))
             var = generate_var!(dict, a, b, varclass)
             dict[:kwargs][getname(var)] = def
-            (var, nothing)
+            (var, a, nothing)
         end
         Expr(:(=), a, b) => begin
             Base.remove_linenums!(b)
             def, meta = parse_default(mod, b)
-            var, _ = parse_variable_def!(dict, mod, a, varclass, kwargs, def)
-            dict[varclass][getname(var)][:default] = def
-            if typeof(def) != Symbol
+            if typeof(def) <: Number
+                var, name, _ = parse_variable_def!(dict, mod, a, varclass, kwargs, def)
+                dict[varclass][name][:default] = def
                 var = setdefault(var, def)
                 def = nothing
             else
-                def in [keys(dict[:kwargs])...;] ||
-                    error("$def is not a known parameter or variable")
-                var = setdefault(var, def)
+                var, name, _ = parse_variable_def!(dict, mod, a, varclass, kwargs, nothing)
+                dict[varclass][name][:default] = def
+                dict[:kwargs][getname(var)] = def
             end
             if !isnothing(meta)
                 if (ct = get(meta, VariableConnectType, nothing)) !== nothing
-                    dict[varclass][getname(var)][:connection_type] = nameof(ct)
+                    dict[varclass][name][:connection_type] = nameof(ct)
                 end
                 var = set_var_metadata(var, meta)
             end
-            (var, def)
+            (var, name, def)
         end
         Expr(:tuple, a, b) => begin
-            var, _ = parse_variable_def!(dict, mod, a, varclass, kwargs)
+            var, name, _ = parse_variable_def!(dict, mod, a, varclass, kwargs, def)
             meta = parse_metadata(mod, b)
             if (ct = get(meta, VariableConnectType, nothing)) !== nothing
-                dict[varclass][getname(var)][:connection_type] = nameof(ct)
+                dict[varclass][name][:connection_type] = nameof(ct)
             end
-            (set_var_metadata(var, meta), nothing)
+            (set_var_metadata(var, meta), name, nothing)
         end
         _ => error("$arg cannot be parsed")
     end
@@ -114,7 +114,6 @@ function generate_var(a, varclass)
 end
 
 function generate_var!(dict, a, varclass)
-    #var = generate_var(Symbol("#", a), varclass)
     var = generate_var(a, varclass)
     vd = get!(dict, varclass) do
         Dict{Symbol, Dict{Symbol, Any}}()
@@ -149,15 +148,9 @@ function parse_default(mod, a)
             meta = parse_metadata(mod, y)
             (def, meta)
         end
-        ::Symbol || ::Number => (a, nothing)
-        Expr(:call, a...) => begin
-            def = parse_default.(Ref(mod), a)
-            expr = Expr(:call)
-            for (d, _) in def
-                push!(expr.args, d)
-            end
-            (expr, nothing)
-        end
+        ::Symbol => (Symbol("#", a), nothing)
+        ::Number => (a, nothing)
+        Expr(:call, x...) => (sanitize_equation!(a), nothing)
         _ => error("Cannot parse default $a")
     end
 end
@@ -321,6 +314,8 @@ function parse_extend!(exprs, ext, dict, body)
                     error("`@extend` destructuring only takes an tuple as LHS. Got $body")
                 end
                 a, b = b.args
+                _vars = deepcopy(vars)
+                sanitize_equation!(_vars)
                 vars, a, b
             end
             ext[] = a
@@ -329,18 +324,39 @@ function parse_extend!(exprs, ext, dict, body)
             push!(expr.args, :($a = $b))
             if vars !== nothing
                 push!(expr.args, :(@unpack $vars = $a))
+                push!(expr.args, :($_vars = $vars))
             end
         end
         _ => error("`@extend` only takes an assignment expression. Got $body")
     end
 end
 
+function sanitize_equation!(e::Expr)
+    # Whenver the expression is of `:call` type, exclude the first arg i.e
+    # function name.
+    start = Meta.isexpr(e, :call) ? 2 : 1
+    for i in start:lastindex(e.args)
+        MLStyle.@match e.args[i] begin
+            x::Number => continue
+            x::Symbol => (e.args[i] = _varname(x))
+            x::Expr => sanitize_equation!(x)
+            _ => @info e.args[i]
+        end
+    end
+    e
+end
+
 function parse_variable_arg!(expr, vs, dict, mod, arg, varclass, kwargs)
-    vv, _ = parse_variable_def!(dict, mod, arg, varclass, kwargs)
-    v = Num(vv)
-    name = getname(v)
-    push!(vs, name)
-    push!(expr.args, :($name = $name === nothing ? $vv : $setdefault($vv, $name)))
+    vv, name, def = parse_variable_def!(dict, mod, arg, varclass, kwargs)
+    varname = Symbol("#", name)
+    push!(vs, varname)
+    if def !== nothing
+        push!(expr.args,
+            :($varname = $name === nothing ? ($setdefault($vv, $def)) :
+                         $setdefault($vv, $name)))
+    else
+        push!(expr.args, :($varname = $name === nothing ? $vv : $setdefault($vv, $name)))
+    end
 end
 
 function parse_variables!(exprs, vs, dict, mod, body, varclass, kwargs)
@@ -355,6 +371,7 @@ end
 function parse_equations!(exprs, eqs, dict, body)
     for arg in body.args
         arg isa LineNumberNode && continue
+        sanitize_equation!(arg)
         push!(eqs, arg)
     end
     # TODO: does this work with TOML?

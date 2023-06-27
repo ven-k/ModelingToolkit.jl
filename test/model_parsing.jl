@@ -174,10 +174,10 @@ kval = 5
 @test hasmetadata(model.k, VariableDescription)
 
 @test getdefault(model.cval) == 1
-@test getdefault(model.c) == 2
+@test typeof(getdefault(model.c)) == SymbolicUtils.BasicSymbolic{Real}
 @test getdefault(model.d) == 2
 @test_throws KeyError getdefault(model.e)
 @test getdefault(model.f) == 3
 @test getdefault(model.i) == 4
-@test getdefault(model.j) == :jval
-@test getdefault(model.k) == kval
+@test typeof(getdefault(model.j)) == SymbolicUtils.BasicSymbolic{Real}
+@test typeof(getdefault(model.k)) == SymbolicUtils.BasicSymbolic{Real}
