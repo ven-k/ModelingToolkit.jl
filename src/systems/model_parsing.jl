@@ -178,9 +178,48 @@ function parse_default(mod, a)
             end
             (expr, nothing)
         end
-        _ => error("Cannot parse default $a")
+        Expr(:if, condition::Expr, x, y) => begin
+            if condition.args[1] in (:(==), :(<), :(>))
+                op = compare_op(condition.args[1])
+                expr = Expr(:call)
+                push!(expr.args, op)
+                for cond in condition.args[2:end]
+                    cond isa Symbol ? push!(expr.args, :($getdefault($cond))) :
+                    push!(expr.args, cond)
+                end
+                a.args[1] = expr
+                @info 165 expr
+            end
+            (a, nothing)
+        end
+        Expr(:if, condition::Bool, x, y) => begin
+            xarg = x isa Symbol ? :($getdefault($x)) : x
+            yarg = y isa Symbol ? :($getdefault($y)) : y
+            condition ? (xarg, nothing) : (yarg, nothing)
+
+        end
+        Expr(:if, condition::Symbol, x, y) => begin
+            xarg = x isa Symbol ? :($getdefault($x)) : x
+            yarg = y isa Symbol ? :($getdefault($y)) : y
+            expr = Expr(:call)
+            a.args[1] = :($getdefault($condition))
+            a.args[2] = xarg
+            a.args[3] = yarg
+            @info 183 a
+            (a, nothing)
+        end
+        _ => error("Cannot parse default $a $(typeof(a))")
     end
 end
+
+compare_op(a) = if a == :(==)
+    :isequal
+elseif a == :(<)
+    :isless
+elseif a == :(>)
+    :(Base.isgreater)
+end
+
 
 function parse_metadata(mod, a)
     MLStyle.@match a begin
@@ -219,7 +258,12 @@ function mtkmodel_macro(mod, name, expr)
             parse_model!(exprs.args, comps, ext, eqs, icon, vs, ps,
                 dict, mod, arg, kwargs)
         elseif arg.head == :block
-            push!(exprs.args, arg)
+            Base.remove_linenums!(arg)
+            for a in arg.args
+                @info 218 a
+                @info Meta.isexpr(a, :macrocall) #&& parse_model!(exprs.args, comps, ext, eqs, icon, vs, ps,
+                #dict, mod, arg, kwargs) || push!(exprs.args, arg)
+            end
         else
             error("$arg is not valid syntax. Expected a macro call.")
         end
@@ -240,7 +284,9 @@ function mtkmodel_macro(mod, name, expr)
         push!(exprs.args, :($extend($sys, $(ext[]))))
     end
 
-    :($name = $Model((; name, $(kwargs...)) -> $exprs, $dict, false))
+    @info 237 "kwargs $kwargs"
+    @info "expr:" exprs
+    :($name = $Model(($(arglist...); name, $(kwargs...)) -> $exprs, $dict))
 end
 
 function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, dict,
@@ -282,6 +328,9 @@ function parse_components!(exprs, cs, dict, body, kwargs)
                 push!(b.args, Expr(:kw, :name, Meta.quot(a)))
                 arg.args[2] = b
                 push!(expr.args, arg)
+            end
+            Expr(:if, condition::Expr, a, b) => begin
+
             end
             _ => error("`@components` only takes assignment expressions. Got $arg")
         end
