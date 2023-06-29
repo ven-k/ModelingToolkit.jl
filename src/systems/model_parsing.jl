@@ -201,7 +201,6 @@ function parse_default(mod, a)
         Expr(:if, condition::Symbol, x, y) => begin
             xarg = x isa Symbol ? :($getdefault($x)) : x
             yarg = y isa Symbol ? :($getdefault($y)) : y
-            expr = Expr(:call)
             a.args[1] = :($getdefault($condition))
             a.args[2] = xarg
             a.args[3] = yarg
@@ -294,7 +293,9 @@ function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, dict,
     mname = arg.args[1]
     body = arg.args[end]
     if mname == Symbol("@components")
-        parse_components!(exprs, comps, dict, body, kwargs)
+        expr = Expr(:block)
+        @info 268
+        parse_components!(exprs, comps, dict, body, kwargs, expr)
     elseif mname == Symbol("@extend")
         parse_extend!(exprs, ext, dict, body, kwargs)
     elseif mname == Symbol("@variables")
@@ -310,19 +311,50 @@ function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, dict,
     end
 end
 
-function parse_components!(exprs, cs, dict, body, kwargs)
-    expr = Expr(:block)
+function handle_if!(expr, condition, a, exprs, cs, dict, kwargs)
+    MLStyle.@match condition begin
+        x::Expr => begin
+            # do more with x
+            push!(expr.args, :($x))
+        end
+        x::Symbol => begin
+            ifexpr = Expr(:if)
+            push!(ifexpr.args, :($getdefault($x)))
+            parse_components!(exprs, cs, dict, a, kwargs, ifexpr)
+        end
+        ::Bool => begin
+            condition ? parse_components!(exprs, cs, dict, a, kwargs, expr) : return
+        end
+    end
+end
+
+function handle_if(condition, a)
+
+end
+
+function parse_components!(exprs, cs, dict, body, kwargs, expr)
+    # expr = Expr(:block)
     push!(exprs, expr)
     comps = Vector{Symbol}[]
     for arg in body.args
         arg isa LineNumberNode && continue
         MLStyle.@match arg begin
+            Expr(:if, condition, x) => begin
+                # @info 292 typeof(condition) x
+                handle_if!(expr, condition, x, exprs, cs, dict, kwargs)
+            end
+            Expr(:if, condition, x, y) => begin
+
+            end
             Expr(:(=), a, b) => begin
+            @info 320
+
                 push!(cs, a)
                 push!(comps, [a, b.args[1]])
                 arg = deepcopy(arg)
                 b = deepcopy(arg.args[2])
 
+                @info 325 a b expr kwargs
                 component_args!(a, b, expr, kwargs)
 
                 push!(b.args, Expr(:kw, :name, Meta.quot(a)))
@@ -358,10 +390,26 @@ function component_args!(a, b, expr, kwargs)
             Expr(:parameters, x...) => begin
                 component_args!(a, arg, expr, kwargs)
             end
-            Expr(:kw, x, y) => begin
+            Expr(:kw, x) => begin
+                _v = _rename(a, x)
+                b.args[i] = Expr(:kw, x, _v)
+                push!(kwargs, _v, nothing)
+            end
+            Expr(:kw, x, y::Number) => begin
                 _v = _rename(a, x)
                 b.args[i] = Expr(:kw, x, _v)
                 push!(kwargs, Expr(:kw, _v, y))
+            end
+            Expr(:kw, x, y) => begin
+            @info 375
+                _v = _rename(a, x)
+                push!(expr.args, :($_v = $y))
+                def = Expr(:kw)
+                push!(def.args, x)
+                push!(def.args, :($getdefault($_v)))
+                b.args[i] = def
+                # b.args[i] = Expr(:kw, x, _v)
+                push!(kwargs, Expr(:kw, _v, nothing))
             end
             _ => error("Could not parse $arg of component $a")
         end
@@ -381,7 +429,11 @@ function parse_extend!(exprs, ext, dict, body, kwargs)
                     error("`@extend` destructuring only takes an tuple as LHS. Got $body")
                 end
                 a, b = b.args
+                @info 398  vars a b
+                # parse and work on b
+
                 component_args!(a, b, expr, kwargs)
+
                 vars, a, b
             end
             ext[] = a
