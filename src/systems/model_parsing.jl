@@ -188,7 +188,6 @@ function parse_default(mod, a)
                     push!(expr.args, cond)
                 end
                 a.args[1] = expr
-                @info 165 expr
             end
             (a, nothing)
         end
@@ -204,7 +203,6 @@ function parse_default(mod, a)
             a.args[1] = :($getdefault($condition))
             a.args[2] = xarg
             a.args[3] = yarg
-            @info 183 a
             (a, nothing)
         end
         _ => error("Cannot parse default $a $(typeof(a))")
@@ -219,6 +217,21 @@ elseif a == :(>)
     :(Base.isgreater)
 end
 
+function morph_with_default!(eq; ret_eq = deepcopy(eq))
+    # Base.remove_linenums!(eq)
+    # @info 22 eq
+    # @info 223 ret_eq
+    for i in 1:lastindex(eq.args)
+        # @info "At start of $(eq.args[i]): the" ret_eq
+        # @info "Vals" ret_eq.args[i]
+        eq.args[i] isa Expr && morph_with_default!(eq.args[i]; ret_eq = ret_eq.args[i])
+        eq.args[i] isa Symbol && eq.args[i] != :! && (ret_eq.args[i] = :($getdefault($(eq.args[i]))))
+        # @info 229 ret_eq.args
+        # @info "The arg is $(eq.args[i]) and $(ret_eq.args[i])"
+        # @info "At the end of $(eq.args[i]): the" ret_eq "\n\n"
+    end
+    ret_eq
+end
 
 function parse_metadata(mod, a)
     MLStyle.@match a begin
@@ -250,7 +263,7 @@ function mtkmodel_macro(mod, name, expr)
     vs = []
     ps = []
     kwargs = []
-
+    push!(exprs.args, :(systems = []))
     for arg in expr.args
         arg isa LineNumberNode && continue
         if arg.head == :macrocall
@@ -259,7 +272,6 @@ function mtkmodel_macro(mod, name, expr)
         elseif arg.head == :block
             Base.remove_linenums!(arg)
             for a in arg.args
-                @info 218 a
                 @info Meta.isexpr(a, :macrocall) #&& parse_model!(exprs.args, comps, ext, eqs, icon, vs, ps,
                 #dict, mod, arg, kwargs) || push!(exprs.args, arg)
             end
@@ -272,11 +284,14 @@ function mtkmodel_macro(mod, name, expr)
         iv = dict[:independent_variable] = variable(:t)
     end
 
+    # push!(exprs.args, :(@info systems))
+    push!(exprs.args, :(push!(systems, $(comps...))))
+
     gui_metadata = isassigned(icon) > 0 ? GUIMetadata(GlobalRef(mod, name), icon[]) :
                    GUIMetadata(GlobalRef(mod, name))
-
+    # push!(expr.args, :(push!($systems, $(comps...))))
     sys = :($ODESystem($Equation[$(eqs...)], $iv, [$(vs...)], [$(ps...)];
-        systems = [$(comps...)], name, gui_metadata = $gui_metadata)) #, defaults = $defaults))
+        systems, name, gui_metadata = $gui_metadata)) #, defaults = $defaults))
     if ext[] === nothing
         push!(exprs.args, sys)
     else
@@ -285,7 +300,8 @@ function mtkmodel_macro(mod, name, expr)
 
     @info 237 "kwargs $kwargs"
     @info "expr:" exprs
-    :($name = $Model(($(arglist...); name, $(kwargs...)) -> $exprs, $dict))
+    f = :($(Symbol(:__, name, :__))(; name, $(kwargs...)) = $exprs)
+    :($name = $Model($f, $dict, false))
 end
 
 function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, dict,
@@ -293,9 +309,7 @@ function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, dict,
     mname = arg.args[1]
     body = arg.args[end]
     if mname == Symbol("@components")
-        expr = Expr(:block)
-        @info 268
-        parse_components!(exprs, comps, dict, body, kwargs, expr)
+        parse_components!(exprs, comps, dict, body, kwargs)
     elseif mname == Symbol("@extend")
         parse_extend!(exprs, ext, dict, body, kwargs)
     elseif mname == Symbol("@variables")
@@ -311,63 +325,127 @@ function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, dict,
     end
 end
 
-function handle_if!(expr, condition, a, exprs, cs, dict, kwargs)
-    MLStyle.@match condition begin
-        x::Expr => begin
-            # do more with x
-            push!(expr.args, :($x))
-        end
-        x::Symbol => begin
-            ifexpr = Expr(:if)
-            push!(ifexpr.args, :($getdefault($x)))
-            parse_components!(exprs, cs, dict, a, kwargs, ifexpr)
-        end
-        ::Bool => begin
-            condition ? parse_components!(exprs, cs, dict, a, kwargs, expr) : return
-        end
-    end
-end
-
-function handle_if(condition, a)
-
-end
-
-function parse_components!(exprs, cs, dict, body, kwargs, expr)
-    # expr = Expr(:block)
-    push!(exprs, expr)
+function _parse_components!(body, kwargs)
+    expr = Expr(:block)
     comps = Vector{Symbol}[]
+    comp_names = []
     for arg in body.args
         arg isa LineNumberNode && continue
         MLStyle.@match arg begin
-            Expr(:if, condition, x) => begin
-                # @info 292 typeof(condition) x
-                handle_if!(expr, condition, x, exprs, cs, dict, kwargs)
-            end
-            Expr(:if, condition, x, y) => begin
-
-            end
             Expr(:(=), a, b) => begin
-            @info 320
-
-                push!(cs, a)
-                push!(comps, [a, b.args[1]])
                 arg = deepcopy(arg)
                 b = deepcopy(arg.args[2])
 
-                @info 325 a b expr kwargs
                 component_args!(a, b, expr, kwargs)
 
                 push!(b.args, Expr(:kw, :name, Meta.quot(a)))
                 arg.args[2] = b
-                push!(expr.args, arg)
-            end
-            Expr(:if, condition::Expr, a, b) => begin
 
+                push!(expr.args, arg)
+                push!(comp_names, a)
+                push!(comps, [a, b.args[1]])
             end
-            _ => error("`@components` only takes assignment expressions. Got $arg")
+            _ => @info 333 "Couldn't parse the component body: $arg"
         end
     end
-    dict[:components] = comps
+    return comp_names, comps, expr
+end
+
+#=
+function handle_if!(condition, x)
+    ifexpr = Expr(:if)
+    handle_if_block!(ifexpr, x, kwargs, condition)
+    push!(exprs, ifexpr)
+end
+
+function handle_if!(condition, x, y)
+    ifexpr = Expr(:if)
+    handle_if_block!(ifexpr, x, kwargs, condition)
+    handle_if_block!(ifexpr, y, kwargs, nothing)
+    push!(exprs, ifexpr)
+end
+=#
+
+# this was handle_if_block
+function handle_if!(ifexpr, x, kwargs, condition = nothing)
+    @info 370 ifexpr
+    # push!(ifexpr.args, :($substitute_defaults($condition)))
+    if condition isa Symbol
+        push!(ifexpr.args, :($getdefault($condition)))
+    elseif condition isa Num
+        push!(ifexpr.args, :($substitute_defaults($condition)))
+    elseif condition isa Expr
+        push!(ifexpr.args, :($morph_with_default!($condition)))
+    else
+        @info "Don't know what to do with $(typeof(condition))"
+    end
+    comp_names, comps, expr_vec = _parse_components!(x, kwargs)
+    push_conditional_component!(ifexpr, expr_vec, comp_names)
+    # @info 379 ifexpr
+    comps
+end
+
+function handle_if_y!(ifexpr, y, kwargs)
+    Base.remove_linenums!(y)
+    if Meta.isexpr(y, :elseif)
+        comps = [:elseif, y.args[1]]
+        elseifexpr = Expr(:elseif)
+        push!(comps, handle_if!(elseifexpr, y.args[2], kwargs, y.args[1]))
+        push!(comps, handle_if_y!(elseifexpr, y.args[3], kwargs))
+
+        push!(ifexpr.args, elseifexpr)
+        (comps...,)
+    else
+        comp_names, comps, expr_vec = _parse_components!(y, kwargs)
+        push_conditional_component!(ifexpr, expr_vec, comp_names)
+        comps
+    end
+end
+
+function substitute_defaults(eq)
+    varlist = get_variables(eq)
+    substitute(eq, Dict(varlist .=> getdefault.(varlist)))
+end
+
+function push_conditional_component!(ifexpr, expr_vec, comp_names)
+    blk = Expr(:block)
+    # @info 365 expr_vec
+
+    push!(blk.args, :($(expr_vec.args...)))
+    push!(blk.args, :($push!(systems, $(comp_names...))))
+    # @info 366 blk
+    push!(ifexpr.args, blk)
+end
+
+function parse_components!(exprs, cs, dict, compbody, kwargs)
+    dict[:components] = []
+    Base.remove_linenums!(compbody)
+    for arg in compbody.args
+        MLStyle.@match arg begin
+            Expr(:if, condition, x) => begin
+            # comp_names, comps, expr_vec = _parse_components!(x, kwargs)
+                ifexpr = Expr(:if)
+                comps = handle_if!(ifexpr, x, kwargs, condition)
+                push!(exprs, ifexpr)
+                push!(dict[:components], (:if, condition, comps, []))
+            end
+            Expr(:if, condition, x, y) => begin
+                ifexpr = Expr(:if)
+                comps = handle_if!(ifexpr, x, kwargs, condition)
+                ycomps = handle_if_y!(ifexpr, y, kwargs)
+                # @info 482 ycomps
+                push!(exprs, ifexpr)
+                push!(dict[:components], (:if, condition, comps, ycomps))
+            end
+            Expr(:(=), a, b) => begin
+                comp_names, comps, expr_vec = _parse_components!(:(begin $arg end), kwargs)
+                push!(cs, comp_names...)
+                push!(dict[:components], comps...)
+                push!(exprs, expr_vec.args...)
+            end
+            _ => @info "410 Couldn't parse the component body $arg"
+        end
+    end
 end
 
 function _rename(compname, varname)
@@ -401,7 +479,6 @@ function component_args!(a, b, expr, kwargs)
                 push!(kwargs, Expr(:kw, _v, y))
             end
             Expr(:kw, x, y) => begin
-            @info 375
                 _v = _rename(a, x)
                 push!(expr.args, :($_v = $y))
                 def = Expr(:kw)
