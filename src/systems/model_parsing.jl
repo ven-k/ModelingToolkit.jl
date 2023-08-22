@@ -375,7 +375,7 @@ function handle_if!(ifexpr, x, kwargs, condition = nothing)
     elseif condition isa Num
         push!(ifexpr.args, :($substitute_defaults($condition)))
     elseif condition isa Expr
-        push!(ifexpr.args, :($morph_with_default!($condition)))
+        push!(ifexpr.args, morph_with_default!(condition))
     else
         @info "Don't know what to do with $(typeof(condition))"
     end
