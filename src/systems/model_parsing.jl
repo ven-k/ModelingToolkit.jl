@@ -264,17 +264,14 @@ function mtkmodel_macro(mod, name, expr)
     ps = []
     kwargs = []
     push!(exprs.args, :(systems = []))
+    push!(exprs.args, :(equations = []))
     for arg in expr.args
         arg isa LineNumberNode && continue
         if arg.head == :macrocall
             parse_model!(exprs.args, comps, ext, eqs, icon, vs, ps,
                 dict, mod, arg, kwargs)
         elseif arg.head == :block
-            Base.remove_linenums!(arg)
-            for a in arg.args
-                @info Meta.isexpr(a, :macrocall) #&& parse_model!(exprs.args, comps, ext, eqs, icon, vs, ps,
-                #dict, mod, arg, kwargs) || push!(exprs.args, arg)
-            end
+            push!(exprs.args, arg)
         else
             error("$arg is not valid syntax. Expected a macro call.")
         end
@@ -286,11 +283,12 @@ function mtkmodel_macro(mod, name, expr)
 
     # push!(exprs.args, :(@info systems))
     push!(exprs.args, :(push!(systems, $(comps...))))
+    push!(exprs.args, :(push!(equations, $(eqs...))))
 
     gui_metadata = isassigned(icon) > 0 ? GUIMetadata(GlobalRef(mod, name), icon[]) :
                    GUIMetadata(GlobalRef(mod, name))
-    # push!(expr.args, :(push!($systems, $(comps...))))
-    sys = :($ODESystem($Equation[$(eqs...)], $iv, [$(vs...)], [$(ps...)];
+    push!(exprs.args, :(@info equations))
+    sys = :($ODESystem($Equation[equations...], $iv, [$(vs...)], [$(ps...)];
         systems, name, gui_metadata = $gui_metadata)) #, defaults = $defaults))
     if ext[] === nothing
         push!(exprs.args, sys)
@@ -351,23 +349,8 @@ function _parse_components!(body, kwargs)
     return comp_names, comps, expr
 end
 
-#=
-function handle_if!(condition, x)
-    ifexpr = Expr(:if)
-    handle_if_block!(ifexpr, x, kwargs, condition)
-    push!(exprs, ifexpr)
-end
-
-function handle_if!(condition, x, y)
-    ifexpr = Expr(:if)
-    handle_if_block!(ifexpr, x, kwargs, condition)
-    handle_if_block!(ifexpr, y, kwargs, nothing)
-    push!(exprs, ifexpr)
-end
-=#
-
 # this was handle_if_block
-function handle_if!(ifexpr, x, kwargs, condition = nothing)
+function handle_if_x!(ifexpr, x, kwargs, condition = nothing)
     @info 370 ifexpr
     # push!(ifexpr.args, :($substitute_defaults($condition)))
     if condition isa Symbol
@@ -381,7 +364,6 @@ function handle_if!(ifexpr, x, kwargs, condition = nothing)
     end
     comp_names, comps, expr_vec = _parse_components!(x, kwargs)
     push_conditional_component!(ifexpr, expr_vec, comp_names)
-    # @info 379 ifexpr
     comps
 end
 
@@ -390,9 +372,8 @@ function handle_if_y!(ifexpr, y, kwargs)
     if Meta.isexpr(y, :elseif)
         comps = [:elseif, y.args[1]]
         elseifexpr = Expr(:elseif)
-        push!(comps, handle_if!(elseifexpr, y.args[2], kwargs, y.args[1]))
-        push!(comps, handle_if_y!(elseifexpr, y.args[3], kwargs))
-
+        push!(comps, handle_if_x!(elseifexpr, y.args[2], kwargs, y.args[1]))
+        get(y.args, 3, nothing) !== nothing && push!(comps, handle_if_y!(elseifexpr, y.args[3], kwargs))
         push!(ifexpr.args, elseifexpr)
         (comps...,)
     else
@@ -409,11 +390,8 @@ end
 
 function push_conditional_component!(ifexpr, expr_vec, comp_names)
     blk = Expr(:block)
-    # @info 365 expr_vec
-
     push!(blk.args, :($(expr_vec.args...)))
     push!(blk.args, :($push!(systems, $(comp_names...))))
-    # @info 366 blk
     push!(ifexpr.args, blk)
 end
 
@@ -423,15 +401,14 @@ function parse_components!(exprs, cs, dict, compbody, kwargs)
     for arg in compbody.args
         MLStyle.@match arg begin
             Expr(:if, condition, x) => begin
-            # comp_names, comps, expr_vec = _parse_components!(x, kwargs)
                 ifexpr = Expr(:if)
-                comps = handle_if!(ifexpr, x, kwargs, condition)
+                comps = handle_if_x!(ifexpr, x, kwargs, condition)
                 push!(exprs, ifexpr)
                 push!(dict[:components], (:if, condition, comps, []))
             end
             Expr(:if, condition, x, y) => begin
                 ifexpr = Expr(:if)
-                comps = handle_if!(ifexpr, x, kwargs, condition)
+                comps = handle_if_x!(ifexpr, x, kwargs, condition)
                 ycomps = handle_if_y!(ifexpr, y, kwargs)
                 # @info 482 ycomps
                 push!(exprs, ifexpr)
@@ -543,13 +520,50 @@ function parse_variables!(exprs, vs, dict, mod, body, varclass, kwargs)
     end
 end
 
+function handle_if_x_equations!(ifexpr, condition, x, dict)
+    push!(ifexpr.args, condition, :(push!(equations, $(x.args...))))
+    # push!(dict[:equations], [:if, readable_code(condition), readable_code.(x.args)])
+    readable_code.(x.args)
+end
+
+function handle_if_y_equations!(ifexpr, y, dict)
+    if y.head == :elseif
+        elseifexpr = Expr(:elseif)
+        eq_entry = [:elseif, readable_code.(y.args[1].args)...]
+        push!(eq_entry, handle_if_x_equations!(elseifexpr, y.args[1], y.args[2], dict))
+        get(y.args, 3, nothing) !== nothing && push!(eq_entry, handle_if_y_equations!(elseifexpr, y.args[3], dict))
+        push!(ifexpr.args, elseifexpr)
+        (eq_entry...,)
+    else
+        push!(ifexpr.args, y)
+        readable_code.(y.args)
+    end
+end
+
 function parse_equations!(exprs, eqs, dict, body)
+    dict[:equations] = []
+    Base.remove_linenums!(body)
     for arg in body.args
-        arg isa LineNumberNode && continue
-        push!(eqs, arg)
+        MLStyle.@match arg begin
+            Expr(:if, condition, x) => begin
+                ifexpr = Expr(:if)
+                eq_entry = handle_if_x_equations!(ifexpr, condition, x, dict)
+                push!(exprs, ifexpr)
+                push!(dict[:equations], [:if, condition, eq_entry])
+            end
+            Expr(:if, condition, x, y) => begin
+                ifexpr = Expr(:if)
+                xeq_entry = handle_if_x_equations!(ifexpr, condition, x, dict)
+                yeq_entry = handle_if_y_equations!(ifexpr, y, dict)
+                push!(exprs, ifexpr)
+                push!(dict[:equations], [:if, condition, xeq_entry, yeq_entry])
+                # push!(dict[:equations], yeq_entry...)
+            end
+            _ => push!(eqs, arg)
+        end
     end
     # TODO: does this work with TOML?
-    dict[:equations] = readable_code.(eqs)
+    push!(dict[:equations], readable_code.(eqs)...)
 end
 
 function parse_icon!(icon, dict, mod, body::String)
