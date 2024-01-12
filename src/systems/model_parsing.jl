@@ -42,6 +42,8 @@ function _model_macro(mod, name, expr, isconnector)
     eqs = Expr[]
     icon = Ref{Union{String, URI}}()
     ps, sps, vs, = [], [], []
+    c_evts = []
+    d_evts = []
     kwargs = Set()
 
     push!(exprs.args, :(variables = []))
@@ -53,7 +55,7 @@ function _model_macro(mod, name, expr, isconnector)
     for arg in expr.args
         if arg.head == :macrocall
             parse_model!(exprs.args, comps, ext, eqs, icon, vs, ps,
-                sps, dict, mod, arg, kwargs)
+                sps, c_evts, d_evts, dict, mod, arg, kwargs)
         elseif arg.head == :block
             push!(exprs.args, arg)
         elseif arg.head == :if
@@ -90,6 +92,7 @@ function _model_macro(mod, name, expr, isconnector)
     gui_metadata = isassigned(icon) > 0 ? GUIMetadata(GlobalRef(mod, name), icon[]) :
                    GUIMetadata(GlobalRef(mod, name))
 
+
     sys = :($ODESystem($Equation[equations...], $iv, variables, parameters;
         name, systems, gui_metadata = $gui_metadata))
 
@@ -101,6 +104,13 @@ function _model_macro(mod, name, expr, isconnector)
 
     isconnector && push!(exprs.args,
         :($Setfield.@set!(var"#___sys___".connector_type=$connector_type(var"#___sys___"))))
+
+    !(c_evts==[]) && push!(exprs.args,
+        :($Setfield.@set!(var"#___sys___".continuous_events=$SymbolicContinuousCallback.([$(c_evts...)]))))
+
+    !(d_evts==[]) && push!(exprs.args,
+        :($Setfield.@set!(var"#___sys___".discrete_events=$SymbolicDiscreteCallback.([$(d_evts...)]))))
+
 
     f = :($(Symbol(:__, name, :__))(; name, $(kwargs...)) = $exprs)
     :($name = $Model($f, $dict, $isconnector))
@@ -278,7 +288,7 @@ function get_var(mod::Module, b)
     end
 end
 
-function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, sps,
+function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, sps, c_evts, d_evts,
         dict, mod, arg, kwargs)
     mname = arg.args[1]
     body = arg.args[end]
@@ -294,6 +304,10 @@ function parse_model!(exprs, comps, ext, eqs, icon, vs, ps, sps,
         parse_structural_parameters!(exprs, sps, dict, mod, body, kwargs)
     elseif mname == Symbol("@equations")
         parse_equations!(exprs, eqs, dict, body)
+    elseif mname == Symbol("@continuous_events")
+        parse_continuous_events!(c_evts, dict, body)
+    elseif mname == Symbol("@discrete_events")
+        parse_discrete_events!(d_evts, dict, body)
     elseif mname == Symbol("@icon")
         isassigned(icon) && error("This model has more than one icon.")
         parse_icon!(body, dict, icon, mod)
@@ -606,6 +620,23 @@ function parse_equations!(exprs, eqs, dict, body)
                 push!(dict[:equations], readable_code.(eqs)...)
             end
         end
+    end
+end
+
+function parse_continuous_events!(c_evts, dict, body)
+    dict[:continuous_events] = []
+    Base.remove_linenums!(body)
+    for arg in body.args
+        push!(c_evts, arg)
+        push!(dict[:continuous_events], readable_code.(c_evts)...)
+    end
+end
+
+function parse_discrete_events!(d_evts, dict, body)
+    dict[:discrete_events] = []
+    Base.remove_linenums!(body)
+    for arg in body.args
+        push!(dict[:discrete_events], readable_code.(d_evts)...)
     end
 end
 
