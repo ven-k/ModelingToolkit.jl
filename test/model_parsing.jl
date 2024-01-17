@@ -569,3 +569,4 @@ end
     @test Equation[ternary_true.ternary_parameter_true ~ 0] == equations(ternary_true)
     @test Equation[ternary_false.ternary_parameter_false ~ 0] == equations(ternary_false)
 end
+
