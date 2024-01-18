@@ -326,7 +326,7 @@ end
     @test A.structure[:components] == [[:cc, :C]]
 end
 
-@testset "Event handeling in MTKModel" begin
+@testset "Event handling in MTKModel" begin
     @mtkmodel M begin
         @variables begin
             x(t)
@@ -569,4 +569,3 @@ end
     @test Equation[ternary_true.ternary_parameter_true ~ 0] == equations(ternary_true)
     @test Equation[ternary_false.ternary_parameter_false ~ 0] == equations(ternary_false)
 end
-
