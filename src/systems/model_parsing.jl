@@ -434,7 +434,7 @@ function parse_variable_arg(dict, mod, arg, varclass, kwargs)
     vv, def, metadata_expr = parse_variable_def!(dict, mod, arg, varclass, kwargs)
     name = getname(vv)
     default_expr = :($name = $name === nothing ? $setdefault($vv, $def) : $setdefault($vv, $name))
-    return vv isa Num ? name : :($name...), metadata_expr isa Nothing ? default_expr : :($name = $metadata_expr; $default_expr)
+    return vv isa Num ? name : :($name...), metadata_expr isa Nothing ? default_expr : :($default_expr; $name = $metadata_expr)
 end
 
 function handle_conditional_vars!(arg, conditional_branch, mod, varclass, kwargs)
