@@ -231,6 +231,7 @@ using ModelingToolkit
     end
 end
 ```
+
 #### `@defaults` begin block
 
   - Default values can be passed as pairs.
@@ -294,7 +295,7 @@ end
 ```
 
 !!! note
-
+    
     For more examples of usage, checkout [ModelingToolkitStandardLibrary.jl](https://github.com/SciML/ModelingToolkitStandardLibrary.jl/)
 
 ## More on `Model.structure`
