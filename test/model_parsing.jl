@@ -551,3 +551,19 @@ end
 @named m = MyModel()
 @variables x___(t)
 @test isequal(x___, _b[])
+
+@testset "Guesses" begin
+    @mtkmodel GuessModel begin
+        @paramaters begin
+            a
+            b
+            c
+        end
+        @variables begin
+            v(t), [guess = a + b / c]
+        end
+    end
+
+    @named guess_model = GuessModel()
+    @test getguess(guess_model.v) == guess_model.a + guess_model.b / guess_model.c
+end

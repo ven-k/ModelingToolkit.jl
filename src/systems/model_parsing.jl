@@ -143,7 +143,7 @@ function parse_variable_def!(dict, mod, arg, varclass, kwargs;
             def, meta = parse_default(mod, b)
             var, def, _ = parse_variable_def!(dict, mod, a, varclass, kwargs; def)
             dict[varclass][getname(var)][:default] = def
-            if meta !== nothing
+            var, metadata_expr = if meta !== nothing
                 for (type, key) in metatypes
                     if (mt = get(meta, key, nothing)) !== nothing
                         key == VariableConnectType && (mt = nameof(mt))
@@ -154,14 +154,19 @@ function parse_variable_def!(dict, mod, arg, varclass, kwargs;
                         end
                     end
                 end
-                var, metadata_expr = set_var_metadata(var, meta)
+                set_var_metadata(var, meta)
             end
-            length(metadata_expr.args) > 0 && (var, def, metadata_expr) || (var, def, nothing)
+            @info var metadata_expr length(metadata_expr.args)
+            if length(metadata_expr.args) > 0
+                return (var, def, metadata_expr)
+            else
+                return (var, def, nothing)
+            end
         end
         Expr(:tuple, a, b) => begin
             var, def, _ = parse_variable_def!(dict, mod, a, varclass, kwargs)
             meta = parse_metadata(mod, b)
-            if meta !== nothing
+            var, metadata_expr = if meta !== nothing
                 for (type, key) in metatypes
                     if (mt = get(meta, key, nothing)) !== nothing
                         key == VariableConnectType && (mt = nameof(mt))
@@ -172,7 +177,7 @@ function parse_variable_def!(dict, mod, arg, varclass, kwargs;
                         end
                     end
                 end
-                var, metadata_expr = set_var_metadata(var, meta)
+                set_var_metadata(var, meta)
             end
             length(metadata_expr.args) > 0 ? (return var, def, metadata_expr) : (return var, def, nothing)
         end
@@ -434,7 +439,17 @@ function parse_variable_arg(dict, mod, arg, varclass, kwargs)
     vv, def, metadata_expr = parse_variable_def!(dict, mod, arg, varclass, kwargs)
     name = getname(vv)
     default_expr = :($name = $name === nothing ? $setdefault($vv, $def) : $setdefault($vv, $name))
-    return vv isa Num ? name : :($name...), metadata_expr isa Nothing ? default_expr : :($default_expr; $name = $metadata_expr)
+    return vv isa Num ? name : :($name...), metadata_expr isa Nothing ? default_expr : quote
+        @info 1 typeof($name)
+        $default_expr
+        # for arg in $(metadata_expr.args)
+        #     $name = arg
+        # end
+        @info $getdefault($name)
+        name = $getname($vv)
+        $name = $metadata_expr
+        dump($name.val.metadata, maxdepth = 2)
+    end
 end
 
 function handle_conditional_vars!(arg, conditional_branch, mod, varclass, kwargs)
