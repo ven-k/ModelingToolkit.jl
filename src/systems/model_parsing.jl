@@ -190,11 +190,11 @@ function parse_variable_def!(dict, mod, arg, varclass, kwargs, where_types;
             return var, def, Dict()
         end
         Expr(:(::), a, type) => begin
-            type = getfield(mod, type)
+            type = Core.eval(mod, type)
             parse_variable_def!(dict, mod, a, varclass, kwargs, where_types; def, type)
         end
         Expr(:(::), Expr(:call, a, b), type) => begin
-            type = getfield(mod, type)
+            type = Core.eval(mod, type)
             def = _type_check!(def, a, type, varclass)
             parse_variable_def!(dict, mod, a, varclass, kwargs, where_types; def, type)
         end
